@@ -1,64 +1,87 @@
 import redis
 import datetime
-import hashlib
+from functools import wraps
+import time
+import json
+import logging
+def retry(delay=3, backoff=2, throw_exception=True):
+    def deco_retry(f):
+        @wraps(f)
+        def f_retry(*args, **kwargs):
+            mtries, mdelay = args[0].trys, delay
+            while mtries > 1:
+                try:
+                    return f(*args, **kwargs)
+                except Exception:
+                    time.sleep(mdelay)
+                    mtries -= 1
+                    mdelay *= backoff
+            if throw_exception:
+                return f(*args, **kwargs)
+            else:
+                try:
+                    return f(*args, **kwargs)
+                except Exception as E:
+                    logging.exception(E)
+
+        return f_retry
+    return deco_retry
 
 class Store(object):
+    def __init__(self, host, port, local_port, timeout, keepalive, trys):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.socket_keepalive = keepalive
+        self.trys = trys
+        self.local_port = local_port
+        self.database = redis.StrictRedis(host=self.host, port=self.port,
+                                          socket_connect_timeout=self.timeout,
+                                          socket_keepalive=self.socket_keepalive)
+        self.cache_database = redis.StrictRedis(host='127.0.0.1', port=self.local_port)
 
-    def __init__(self):
-        self.cache = {}
-        self.connect(3)
 
-    def connect(self, trys):
-        for i in range(trys):
-            try:
-                self.database = redis.StrictRedis(socket_connect_timeout=10, socket_keepalive=60)
-                return True
-            except:
-                continue
-        return False
+    @retry()
+    def set(self, key, value):
+        self.database.set(key, value)
 
+    @retry(throw_exception=False)
     def cache_get(self, key):
-        if self.cache and self.cache.get(key):
-            if datetime.datetime.now() < self.cache[key].get('time'):
-                return self.cache[key]['value']
+        record = self.cache_database.get(key)
+        if record:
+            record = json.loads(record)
+            if datetime.datetime.now() < datetime.datetime.strptime(record['time'], '%d.%m.%Y %H:%M:%S',):
+                return record['value']
         user_record = self.get(key)
         if user_record:
             user_record = int(user_record)
         return user_record
 
 
-    def get(self, request):
-        conn_success = self.connect(3)
-        user_record = None
-        if conn_success:
-            try:
-                user_record = self.database.get(request)
-            except:
-                self.conn_succes = False
-            if user_record:
-                return user_record
+    @retry()
+    def get(self, key):
+        user_record = self.database.get(key)
+        return user_record
 
-
+    @retry(throw_exception=False)
     def cache_set(self, key, value, time):
-        if self.cache.get(key):
-            delta = datetime.datetime.now() - self.cache[key].get('time')
+        cache = self.cache_database.get(key)
+        if cache:
+            cache = json.loads(self.cache_database.get(key))
+            delta = datetime.datetime.now() - datetime.datetime.strptime(cache.get('time'), '%d.%m.%Y %H:%M:%S')
             if delta.seconds > 0:
-                self.cache[key]['value'] = value
-                self.cache[key]['time'] = datetime.datetime.now() + datetime.timedelta(seconds=time)
                 return None
-        self.cache[key] = {}
-        self.cache[key]['value'] = value
-        self.cache[key]['time'] = datetime.datetime.now() + datetime.timedelta(seconds=time)
-
+        cache = {}
+        cache['value'] = value
+        cache['time'] = datetime.datetime.now() + datetime.timedelta(seconds=time)
+        cache['time'] = cache['time'].strftime('%d.%m.%Y %H:%M:%S')
+        self.cache_database.set(key, json.dumps(cache))
 
 
 if __name__ == "__main__":
-    store = Store()
-    key_parts = [
-        "Jowndow",
-        "Jowdows",
-        "7999999999",
-        "19910425",
-    ]
-    key = "uid:" + hashlib.md5("".join(key_parts)).hexdigest()
-    #store.database.set(key, '9')
+    store = Store('127.0.0.1', '6379', '6370', 10, 10, 3)
+    store.set('1', '[\"pets\", \"travel\", \"hi-tech\"]')
+    res = store.get('2')
+    print(res)
+    print(json.loads(res))
+

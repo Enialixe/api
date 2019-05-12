@@ -13,6 +13,8 @@ import os
 import re
 from scoring import get_score, get_interests
 from store import Store
+from abc import ABCMeta, abstractmethod
+
 
 SALT = "Otus"
 ADMIN_LOGIN = "admin"
@@ -45,54 +47,51 @@ class ValidationError(Exception):
 
 class Field(object):
 
-    def __init__(self, requred, nullable=False):
+    def __init__(self, required, nullable=False):
         self.label = None
-        self.requred = requred
+        self.required = required
         self.nullable = nullable
 
-    def vallidate(self, value):
+    def validate(self, value):
         return value
 
-    def check_nullable_requred(self, requred, nullable, value):
+    def check_nullable_required(self, required, nullable, value):
         if value is not None:
-            if value or (not value and nullable):
-                return value
-            elif (not value and not nullable):
+            if not isinstance(value, int):
+                if not value and not nullable:
+                    raise ValidationError("Field %s must be not nullables" % self.label)
+            elif value == 0 and not nullable:
                 raise ValidationError("Field %s must be not nullables" % self.label)
-        elif requred:
+        elif required:
             raise ValidationError("Field %s must be present" % self.label)
-        else:
-            return None
 
     def __set__(self, instance, value):
-        value = self.check_nullable_requred(self.requred, self.nullable, value)
+        self.check_nullable_required(self.required, self.nullable, value)
         if value is None:
             instance.__dict__[self.label] = value
         else:
-            instance.__dict__[self.label] = self.vallidate(value)
+            instance.__dict__[self.label] = self.validate(value)
 
     def __get__(self, instance, owner):
         return instance.__dict__.get(self.label, None)
 
 
 class CharField(Field):
-    def __init__(self, requred, nullable):
-        super(CharField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(CharField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
-        if isinstance(value, str) or isinstance(value, unicode):
+    def validate(self, value):
+        if isinstance(value, (str, unicode)):
             return value
         else:
-            print(type(value))
-            print(value)
             raise ValidationError('Field %s is not a string' % self.label)
 
 
 class ArgumentsField(Field):
-    def __init__(self, requred, nullable):
-        super(ArgumentsField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(ArgumentsField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, dict):
             return value
         else:
@@ -101,10 +100,10 @@ class ArgumentsField(Field):
 
 class EmailField(Field):
 
-    def __init__(self, requred, nullable):
-        super(EmailField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(EmailField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, str) or isinstance(value, unicode):
             if re.match(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)", value):
                 return value
@@ -116,11 +115,12 @@ class EmailField(Field):
 
 class PhoneField(Field):
 
-    def __init__(self, requred, nullable):
-        super(PhoneField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(PhoneField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
-        if isinstance(value, int) or isinstance(value, str) or isinstance(value, unicode):
+    def validate(self, value):
+        if isinstance(value, long) or isinstance(value, str) or isinstance(value, unicode)\
+                or isinstance(value, int):
             value = str(value)
             if re.match(r"7\d{10}", value) and len(value) == 11:
                 return value
@@ -132,10 +132,10 @@ class PhoneField(Field):
 
 class DateField(Field):
 
-    def __init__(self, requred, nullable):
-        super(DateField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(DateField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, str) or isinstance(value, unicode):
             if re.match(r"\d{2}\.\d{2}\.\d{4}", value):
                 return value
@@ -147,15 +147,15 @@ class DateField(Field):
 
 class BirthDayField(Field):
 
-    def __init__(self, requred, nullable):
-        super(BirthDayField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(BirthDayField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, str) or isinstance(value, unicode):
             if re.match(r"\d{2}\.\d{2}\.\d{4}", value):
                 value = datetime.datetime.strptime(value, '%d.%m.%Y')
                 delta = datetime.datetime.now() - value
-                if delta.days/365<70:
+                if delta.days/365 < 70:
                     return value
                 else:
                     raise ValidationError('Сlient has been born for more than 70 years')
@@ -166,24 +166,24 @@ class BirthDayField(Field):
 
 
 class GenderField(Field):
-    def __init__(self, requred, nullable):
-        super(GenderField, self).__init__(requred, nullable)
+    def __init__(self, required, nullable):
+        super(GenderField, self).__init__(required, nullable)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, int):
-             if value in [UNKNOWN, MALE, FEMALE]:
+            if value in [UNKNOWN, MALE, FEMALE]:
                 return value
-             else:
+            else:
                 raise ValidationError('Wrong gender field value')
         else:
             raise ValidationError('Gender filed has a wrong type')
 
 
 class ClientIDsField(Field):
-    def __init__(self, requred):
-        super(ClientIDsField, self).__init__(requred)
+    def __init__(self, required):
+        super(ClientIDsField, self).__init__(required)
 
-    def vallidate(self, value):
+    def validate(self, value):
         if isinstance(value, list) or isinstance(value, tuple):
             if all(isinstance(item, int) for item in value):
                 return value
@@ -221,23 +221,18 @@ class Request(object):
 
     @property
     def is_valid(self):
-        responce = ''
-        for error in self.errors:
-            responce += error
-            responce += '\r\n'
-        if responce:
-            logging.error('Request error %s' %responce)
-            return INVALID_REQUEST, responce
+        if self.errors:
+            return False
         else:
-            return 0, responce
+            return True
 
 
 class MethodRequest(Request):
-    account = CharField(requred=False, nullable=True)
-    login = CharField(requred=True, nullable=True)
-    token = CharField(requred=True, nullable=True)
-    arguments = ArgumentsField(requred=True, nullable=True)
-    method = CharField(requred=True, nullable=False)
+    account = CharField(required=False, nullable=True)
+    login = CharField(required=True, nullable=True)
+    token = CharField(required=True, nullable=True)
+    arguments = ArgumentsField(required=True, nullable=True)
+    method = CharField(required=True, nullable=False)
 
     def __init__(self, request):
         super(MethodRequest, self).__init__(request)
@@ -248,42 +243,20 @@ class MethodRequest(Request):
 
 
 class OnlineScoreRequest(Request):
-    first_name = CharField(requred=False, nullable=True)
-    last_name = CharField(requred=False, nullable=True)
-    email = EmailField(requred=False, nullable=True)
-    phone = PhoneField(requred=False, nullable=True)
-    birthday = BirthDayField(requred=False, nullable=True)
-    gender = GenderField(requred=False, nullable=True)
+    first_name = CharField(required=False, nullable=True)
+    last_name = CharField(required=False, nullable=True)
+    email = EmailField(required=False, nullable=True)
+    phone = PhoneField(required=False, nullable=True)
+    birthday = BirthDayField(required=False, nullable=True)
+    gender = GenderField(required=False, nullable=True)
 
-    def __init__(self, request, admin):
+    def __init__(self, request):
         super(OnlineScoreRequest, self).__init__(request)
-        self.is_admin = admin
-
-    def handler(self, ctx, store):
-        fields = []
-        if self.is_admin:
-            score = 42
-            return 200, {'score': score}
-        else:
-            for field, value in self.__dict__.items():
-                if value is not None and field != 'errors' and field != 'is_admin':
-                    fields.append(field)
-            if ('phone' in fields and 'email' in fields) \
-                or ('first_name' in fields and 'last_name' in fields) \
-                or ('gender' in fields and 'birthday' in fields):
-                score = get_score(store, self.phone, self.email, self.birthday, self.gender, self.first_name,
-                              self.last_name)
-                ctx['has'] = fields
-                return 200, {'score': score}
-            else:
-                logging.error('Request error "Two much null arguments"')
-                return INVALID_REQUEST, 'Two much null arguments'
 
 
 class ClientsInterestsRequest(Request):
-
-    client_ids = ClientIDsField(requred=True)
-    date = DateField(requred=False, nullable=True)
+    client_ids = ClientIDsField(required=True)
+    date = DateField(required=False, nullable=True)
 
     def __init__(self, request):
         super(ClientsInterestsRequest, self).__init__(request)
@@ -314,34 +287,96 @@ def check_auth(request):
     return False
 
 
+class Handler(object):
+    def __init__(self, request, ctx, store):
+        self.request = request
+        self.ctx = ctx
+        self.store = store
+
+    def get_error(self):
+        responce = ''
+        for error in self.request.errors:
+            responce += error
+            responce += '\r\n'
+        code = INVALID_REQUEST
+        return responce, code
+
+    def handler(self):
+        pass
+
+
+class OnlineScoreRequestHandler(Handler):
+    def __init__(self, request, ctx, store):
+        super(OnlineScoreRequestHandler, self).__init__(request, ctx, store)
+
+    def handler(self):
+        fields = []
+        for field in self.request.declarated_fields:
+            if getattr(self.request, field):
+                fields.append(field)
+        if ('phone' in fields and 'email' in fields) \
+            or ('first_name' in fields and 'last_name' in fields) \
+            or ('gender' in fields and 'birthday' in fields):
+            score = get_score(self.store, self.request.phone, self.request.email, self.request.birthday,
+                                  self.request.gender, self.request.first_name, self.request.last_name)
+            self.ctx['has'] = fields
+            return {'score': score}, 200
+        else:
+            logging.error('Request error "Two much null arguments"')
+            return 'Two much null arguments', INVALID_REQUEST,
+
+
+class ClientsInterestsRequestHandler(Handler):
+    def __init__(self, request, ctx, store):
+        super(ClientsInterestsRequestHandler, self).__init__(request, ctx, store)
+
+    def handler(self):
+        if not self.request.is_valid:
+            responce, code = self.get_error()
+            return responce, code
+        interests = {}
+        for client_id in self.request.client_ids:
+            interests[client_id] = get_interests(self.store, client_id)
+        if interests:
+            self.ctx['nclients'] = len(self.request.client_ids)
+            return interests, 200
+        else:
+            logging.error('Request error "Can not connect to store db"')
+            return 'Can not connect to store db', NOT_FOUND
+
+
+class RequestHandler(Handler):
+    def __init__(self, request, ctx, store):
+        super(RequestHandler, self).__init__(request, ctx, store)
+
+    def handler(self):
+        if not self.request.is_valid:
+            responce, code = self.get_error()
+            return responce, code
+        logging.debug('request is valid')
+        if not check_auth(self.request):
+            logging.debug('forbidden')
+            return 'Forbidden', 403
+        if self.request.method == 'online_score':
+            logging.debug('online score')
+            if self.request.is_admin:
+                return {'score': 42}, 200
+            else:
+                responce, code = OnlineScoreRequestHandler(OnlineScoreRequest(self.request.arguments),
+                                                        self.ctx, self.store).handler()
+                return responce, code
+        if self.request.method == 'clients_interests':
+            logging.debug('clients interests')
+            responce, code = ClientsInterestsRequestHandler(ClientsInterestsRequest(self.request.arguments),
+                                                            self.ctx, self.store).handler()
+            return responce, code
+        logging.debug('wrong request method')
+        return 'Wrong request method', BAD_REQUEST
+
+
 def method_handler(request, ctx, store):
     logging.debug('Parcing request')
-    request = MethodRequest(request['body'])
-    code, responce = request.is_valid
-    print(request.method)
-    if not responce or not code:
-        logging.debug('request is valid')
-        if not check_auth(request):
-            logging.debug('forbidden')
-            code = 403
-            responce = 'Forbidden'
-        elif request.method == 'online_score':
-            logging.debug('online score')
-            score_request = OnlineScoreRequest(request.arguments, request.is_admin)
-            code, responce = score_request.is_valid
-            if not responce or not code:
-                logging.debug('online score is valid')
-                code, responce = score_request.handler(ctx, store)
-        elif request.method == 'clients_interests':
-            logging.debug('clients interests')
-            clients_request = ClientsInterestsRequest(request.arguments)
-            code, responce = clients_request.is_valid
-            if not responce or not code:
-                logging.debug('clients interests is valid')
-                code, responce = clients_request.handler(ctx, store)
-        else:
-            logging.debug('wrong request method')
-            return 'Wrong request method', BAD_REQUEST
+    responce, code = RequestHandler(MethodRequest(request['body']), ctx, store).handler()
     return responce, code
 
 
@@ -349,10 +384,9 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
     router = {
         "method": method_handler
     }
-    store = Store()
+    store = Store('127.0.0.1', '6379', '6370', 10, 10, 3)
 
     def get_request_id(self, headers):
-        print(headers)
         return headers.get('HTTP_X_REQUEST_ID', uuid.uuid4().hex)
 
     def do_POST(self):
@@ -362,11 +396,11 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
         try:
             data_string = self.rfile.read(int(self.headers['Content-Length']))
             request = json.loads(data_string)
-        except Exception as E:
-            print(E)
+        except Exception:
             code = BAD_REQUEST
 
         if request:
+            logging.info(request)
             path = self.path.strip("/")
             logging.info("%s: %s %s" % (self.path, data_string, context["request_id"]))
             if path in self.router:
